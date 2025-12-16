@@ -1,5 +1,6 @@
 package com.mineclone.game;
 
+import com.mineclone.world.TerrainGenerator;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -22,8 +23,8 @@ public class ChunkManager {
     // Chunk storage (using long keys for efficiency)
     private final Map<Long, Chunk> chunks;
     
-    // World generation settings
-    private final int flatTerrainHeight;
+    // Terrain generation
+    private final TerrainGenerator terrainGenerator;
     
     // Render distance (in chunks)
     private int renderDistance;
@@ -33,14 +34,14 @@ public class ChunkManager {
     private int chunksGenerated;
 
     /**
-     * Create a new chunk manager.
+     * Create a new chunk manager with terrain generation.
      * @param renderDistance How many chunks to load around the player
-     * @param flatTerrainHeight Y level for flat terrain (e.g., 64 for sea level)
+     * @param seed World seed for terrain generation
      */
-    public ChunkManager(int renderDistance, int flatTerrainHeight) {
+    public ChunkManager(int renderDistance, long seed) {
         this.chunks = new ConcurrentHashMap<>();
         this.renderDistance = renderDistance;
-        this.flatTerrainHeight = flatTerrainHeight;
+        this.terrainGenerator = new TerrainGenerator(seed);
         this.chunksLoaded = 0;
         this.chunksGenerated = 0;
     }
@@ -60,7 +61,7 @@ public class ChunkManager {
         
         return chunks.computeIfAbsent(key, k -> {
             Chunk chunk = new Chunk(chunkX, chunkZ);
-            generateFlatTerrain(chunk);
+            generateTerrain(chunk);
             chunksGenerated++;
             chunksLoaded++;
             return chunk;
@@ -184,31 +185,36 @@ public class ChunkManager {
     }
 
     /**
-     * Generate flat terrain for a chunk.
-     * Simple flat world at specified height.
+     * Generate terrain for a chunk using the terrain generator.
      */
-    private void generateFlatTerrain(Chunk chunk) {
-        // Fill from bottom to flatTerrainHeight
-        for (int x = 0; x < Chunk.SIZE; x++) {
-            for (int z = 0; z < Chunk.SIZE; z++) {
+    private void generateTerrain(Chunk chunk) {
+        // Convert chunk coordinates to world coordinates
+        int chunkWorldX = chunk.chunkX * Chunk.SIZE;
+        int chunkWorldZ = chunk.chunkZ * Chunk.SIZE;
+        
+        // Generate terrain for each column in the chunk
+        for (int localX = 0; localX < Chunk.SIZE; localX++) {
+            for (int localZ = 0; localZ < Chunk.SIZE; localZ++) {
+                int worldX = chunkWorldX + localX;
+                int worldZ = chunkWorldZ + localZ;
+                
+                // Generate entire column
                 for (int y = 0; y < Chunk.HEIGHT; y++) {
-                    if (y == 0) {
-                        // Bedrock at bottom
-                        chunk.setBlock(x, y, z, Block.Type.STONE);
-                    } else if (y < flatTerrainHeight - 3) {
-                        // Stone layer
-                        chunk.setBlock(x, y, z, Block.Type.STONE);
-                    } else if (y < flatTerrainHeight) {
-                        // Dirt layer
-                        chunk.setBlock(x, y, z, Block.Type.DIRT);
-                    } else if (y == flatTerrainHeight) {
-                        // Grass on top
-                        chunk.setBlock(x, y, z, Block.Type.GRASS);
+                    Block.Type blockType = terrainGenerator.getBlockType(worldX, y, worldZ);
+                    
+                    if (blockType != Block.Type.AIR) {
+                        chunk.setBlock(localX, y, localZ, blockType);
                     }
-                    // Above is air (default)
                 }
             }
         }
+    }
+    
+    /**
+     * Get surface height at world coordinates for player spawning.
+     */
+    public int getSurfaceHeight(int worldX, int worldZ) {
+        return terrainGenerator.getSurfaceHeight(worldX, worldZ);
     }
 
     /**

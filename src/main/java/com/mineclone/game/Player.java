@@ -26,15 +26,22 @@ public class Player {
     // Physics state
     private boolean onGround;
     private boolean horizontalCollision;
+    private boolean flying;
+    
+    // Flying state tracking for double-tap detection
+    private long lastSpacePressTime;
+    private static final long DOUBLE_TAP_TIME_MS = 300;  // Time window for double-tap
     
     // Player constants (Minecraft standard dimensions)
     private static final float PLAYER_EYE_HEIGHT = 1.62f;
     
     // Physics constants (tuned to feel like Minecraft)
     private static final float WALK_SPEED = 4.317f;      // Minecraft: 4.317 blocks/sec
+    private static final float FLY_SPEED = 10.0f;        // Flying is faster
     private static final float JUMP_VELOCITY = 9.0f;      // Tuned for ~1.25 block jump
     private static final float GROUND_ACCELERATION = 0.1f; // How fast we reach max speed
     private static final float AIR_ACCELERATION = 0.02f;   // Air control (limited)
+    private static final float FLY_ACCELERATION = 0.15f;   // Flying acceleration
 
     public Player() {
         // Spawn at Y=65 (one block above the grass at Y=64)
@@ -48,6 +55,8 @@ public class Player {
         lastRotation = new Vector3f(rotation);
         onGround = false;
         horizontalCollision = false;
+        flying = false;
+        lastSpacePressTime = 0;
     }
 
     /**
@@ -89,9 +98,9 @@ public class Player {
             moveZ /= length;
         }
         
-        // Apply acceleration based on ground state
-        float acceleration = onGround ? GROUND_ACCELERATION : AIR_ACCELERATION;
-        float speed = WALK_SPEED; // TODO: Add sprint support
+        // Get current speed and acceleration based on state (flying/walking)
+        float speed = getMovementSpeed();
+        float acceleration = getAcceleration();
         
         // Add to velocity (acceleration-based, not instant)
         velocity.x += moveX * speed * acceleration;
@@ -140,4 +149,51 @@ public class Player {
     public boolean isOnGround() { return onGround; }
     public boolean hasHorizontalCollision() { return horizontalCollision; }
     public float getEyeHeight() { return PLAYER_EYE_HEIGHT; }
+    
+    public boolean isFlying() { return flying; }
+    
+    /**
+     * Toggle flying mode (called on double-tap space).
+     */
+    public void toggleFlying() {
+        flying = !flying;
+        if (flying) {
+            // When starting to fly, zero vertical velocity
+            velocity.y = 0;
+        }
+        System.out.println("✈️ FLYING MODE: " + (flying ? "ON" : "OFF"));
+    }
+    
+    /**
+     * Handle space bar press for jump/fly logic.
+     * Returns true if this was a double-tap.
+     */
+    public boolean onSpacePressed() {
+        long currentTime = System.currentTimeMillis();
+        long timeSinceLastPress = currentTime - lastSpacePressTime;
+        
+        boolean isDoubleTap = timeSinceLastPress < DOUBLE_TAP_TIME_MS && timeSinceLastPress > 0;
+        lastSpacePressTime = currentTime;
+        
+        if (isDoubleTap) {
+            toggleFlying();
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * Get movement speed based on current state.
+     */
+    public float getMovementSpeed() {
+        return flying ? FLY_SPEED : WALK_SPEED;
+    }
+    
+    /**
+     * Get acceleration based on current state.
+     */
+    public float getAcceleration() {
+        if (flying) return FLY_ACCELERATION;
+        return onGround ? GROUND_ACCELERATION : AIR_ACCELERATION;
+    }
 }
