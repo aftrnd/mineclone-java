@@ -165,23 +165,8 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
         org.joml.Vector3f cameraPos = camera.getPosition();
         org.joml.Vector3f forward = camera.getForward();
         
-        // Perform raycast (using improved DDA algorithm)
+        // Perform raycast
         currentLookingAt = ImprovedRaycaster.raycast(cameraPos, forward, chunkManager);
-        
-        // Debug: Print forward vector when targeting a block
-        if (currentLookingAt.isHit()) {
-            org.joml.Vector3i target = currentLookingAt.getBlockPos();
-            // Calculate expected direction to target
-            float dx = target.x + 0.5f - cameraPos.x;
-            float dy = target.y + 0.5f - cameraPos.y;
-            float dz = target.z + 0.5f - cameraPos.z;
-            float len = (float) Math.sqrt(dx*dx + dy*dy + dz*dz);
-            System.out.printf("Targeting (%d,%d,%d): forward=(%.3f,%.3f,%.3f) expected=(%.3f,%.3f,%.3f) pitch=%.1f yaw=%.1f%n",
-                target.x, target.y, target.z,
-                forward.x, forward.y, forward.z,
-                dx/len, dy/len, dz/len,
-                player.getRotation().x, player.getRotation().y);
-        }
     }
     
     /**
