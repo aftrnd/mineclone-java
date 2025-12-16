@@ -162,4 +162,8 @@ public class Window {
     public boolean isKeyPressed(int keyCode) {
         return glfwGetKey(window, keyCode) == GLFW_PRESS;
     }
+    
+    public void setCursorMode(int mode) {
+        glfwSetInputMode(window, GLFW_CURSOR, mode);
+    }
 } 

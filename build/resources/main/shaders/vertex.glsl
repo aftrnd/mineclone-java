@@ -1,14 +1,15 @@
-#version 330
+#version 330 core
 
-layout (location=0) in vec2 position;
-layout (location=1) in vec3 color;
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aColor;
 
-out vec3 fragColor;
+out vec3 vertexColor;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
 
 void main() {
-    // Pass position directly
-    gl_Position = vec4(position, 0.0, 1.0);
-    
-    // Pass color to fragment shader
-    fragColor = color;
-} 
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
+    vertexColor = aColor;
+}
