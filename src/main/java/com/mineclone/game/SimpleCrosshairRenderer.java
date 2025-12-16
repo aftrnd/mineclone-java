@@ -11,13 +11,12 @@ import static org.lwjgl.opengl.GL20.*;
 import static org.lwjgl.opengl.GL30.*;
 
 /**
- * Simple crosshair renderer using modern OpenGL (no deprecated functions).
- * Draws a + shape in the center of the screen.
+ * Renders a Minecraft-style crosshair in the center of the screen.
+ * White + with black outline for maximum visibility.
  */
 public class SimpleCrosshairRenderer {
-    private static final float SIZE = 10.0f;  // Size in pixels
-    private static final float THICKNESS = 2.0f;
-    private static final float GAP = 3.0f;  // Gap in center
+    private static final float SIZE = 0.015f;  // Size in NDC coordinates (small +)
+    private static final float THICKNESS = 3.0f;
     
     private int vaoId;
     private int vboId;
@@ -26,9 +25,6 @@ public class SimpleCrosshairRenderer {
     private int colorLoc;
     private boolean initialized = false;
     
-    /**
-     * Initialize the crosshair (called on first render).
-     */
     private void init(int screenWidth, int screenHeight) {
         // Create shader program
         shaderProgram = createShaderProgram();
@@ -39,19 +35,13 @@ public class SimpleCrosshairRenderer {
         vaoId = glGenVertexArrays();
         vboId = glGenBuffers();
         
-        // Crosshair vertices (4 line segments forming a +)
+        // Crosshair + shape in NDC coordinates
         float[] vertices = {
-            // Horizontal left
+            // Horizontal line
             -SIZE, 0.0f,
-            -GAP, 0.0f,
-            // Horizontal right
-            GAP, 0.0f,
             SIZE, 0.0f,
-            // Vertical top
+            // Vertical line
             0.0f, -SIZE,
-            0.0f, -GAP,
-            // Vertical bottom
-            0.0f, GAP,
             0.0f, SIZE
         };
         
@@ -62,19 +52,16 @@ public class SimpleCrosshairRenderer {
         glBindBuffer(GL_ARRAY_BUFFER, vboId);
         glBufferData(GL_ARRAY_BUFFER, buffer, GL_STATIC_DRAW);
         
-        // Position attribute
         glVertexAttribPointer(0, 2, GL_FLOAT, false, 0, 0);
         glEnableVertexAttribArray(0);
         
         glBindVertexArray(0);
         initialized = true;
+        
+        System.out.println("✓ Crosshair initialized (Minecraft-style white + with black outline)");
     }
     
-    /**
-     * Create shader program for crosshair rendering.
-     */
     private int createShaderProgram() {
-        // Simple vertex shader (inline)
         String vertexShaderSource = """
             #version 330 core
             layout (location = 0) in vec2 position;
@@ -84,7 +71,6 @@ public class SimpleCrosshairRenderer {
             }
             """;
         
-        // Simple fragment shader (inline)
         String fragmentShaderSource = """
             #version 330 core
             out vec4 FragColor;
@@ -94,7 +80,6 @@ public class SimpleCrosshairRenderer {
             }
             """;
         
-        // Compile shaders
         int vertexShader = glCreateShader(GL_VERTEX_SHADER);
         glShaderSource(vertexShader, vertexShaderSource);
         glCompileShader(vertexShader);
@@ -103,66 +88,57 @@ public class SimpleCrosshairRenderer {
         glShaderSource(fragmentShader, fragmentShaderSource);
         glCompileShader(fragmentShader);
         
-        // Link program
         int program = glCreateProgram();
         glAttachShader(program, vertexShader);
         glAttachShader(program, fragmentShader);
         glLinkProgram(program);
         
-        // Cleanup
         glDeleteShader(vertexShader);
         glDeleteShader(fragmentShader);
         
         return program;
     }
     
-    /**
-     * Render the crosshair at screen center.
-     */
     public void render(int screenWidth, int screenHeight) {
         if (!initialized) {
             init(screenWidth, screenHeight);
         }
         
-        // Save OpenGL state
-        boolean depthTestEnabled = glIsEnabled(GL_DEPTH_TEST);
-        boolean blendEnabled = glIsEnabled(GL_BLEND);
-        
         // Setup for 2D rendering
+        boolean depthTestEnabled = glIsEnabled(GL_DEPTH_TEST);
         glDisable(GL_DEPTH_TEST);
-        if (!blendEnabled) {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        }
+        glDepthMask(false);
         
         // Use shader
         glUseProgram(shaderProgram);
         
-        // Set orthographic projection (screen coordinates)
-        Matrix4f projection = new Matrix4f().ortho(
-            -screenWidth / 2.0f, screenWidth / 2.0f,
-            screenHeight / 2.0f, -screenHeight / 2.0f,
-            -1.0f, 1.0f
-        );
+        // Account for aspect ratio to make crosshair proportional
+        float aspectRatio = (float) screenWidth / screenHeight;
+        Matrix4f projection = new Matrix4f().identity();
+        projection.scale(1.0f, aspectRatio, 1.0f);  // Scale Y by aspect ratio
+        
         FloatBuffer projBuffer = BufferUtils.createFloatBuffer(16);
         projection.get(projBuffer);
         glUniformMatrix4fv(projectionLoc, false, projBuffer);
         
-        // Set color (white with slight transparency)
-        glUniform4f(colorLoc, 1.0f, 1.0f, 1.0f, 0.9f);
-        
-        // Draw crosshair
         glBindVertexArray(vaoId);
+        
+        // Draw black outline first (thicker)
+        glLineWidth(THICKNESS + 2.0f);
+        glUniform4f(colorLoc, 0.0f, 0.0f, 0.0f, 1.0f);
+        glDrawArrays(GL_LINES, 0, 4);
+        
+        // Draw white crosshair on top
         glLineWidth(THICKNESS);
-        glDrawArrays(GL_LINES, 0, 8);
+        glUniform4f(colorLoc, 1.0f, 1.0f, 1.0f, 1.0f);
+        glDrawArrays(GL_LINES, 0, 4);
+        
         glBindVertexArray(0);
         
-        // Restore OpenGL state
+        // Restore state
+        glDepthMask(true);
         if (depthTestEnabled) {
             glEnable(GL_DEPTH_TEST);
-        }
-        if (!blendEnabled) {
-            glDisable(GL_BLEND);
         }
         glUseProgram(0);
     }
@@ -175,4 +151,3 @@ public class SimpleCrosshairRenderer {
         }
     }
 }
-
