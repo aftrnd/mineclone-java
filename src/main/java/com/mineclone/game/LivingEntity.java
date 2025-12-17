@@ -48,13 +48,13 @@ public abstract class LivingEntity extends Entity {
     private static final float MOVEMENT_FACTOR = 0.16277136f / (0.6f * 0.6f * 0.6f);
     
     // Movement speeds (blocks per tick at 20 TPS = m/s at 20 TPS)
-    protected float movementSpeed = 0.1f;        // Walking: 0.1 * 20 = 2.0 m/s
-    protected float flyingSpeed = 0.05f;         // Flying: 0.05 * 20 = 1.0 m/s
+    protected float movementSpeed = 0.1f;        // Walking: ~1.8 m/s
+    protected float flyingSpeed = 0.25f;         // Flying: tuned for ~5 m/s base
     protected float jumpPower = 0.42f;           // Jump velocity
     
     // Speed multipliers
     private static final float SPRINT_SPEED_MODIFIER = 1.3f;      // Sprint: 2.6 m/s
-    private static final float FLYING_SPRINT_MODIFIER = 2.0f;     // Flying sprint: 2.0 m/s
+    private static final float FLYING_SPRINT_MODIFIER = 2.0f;     // Flying sprint: ~10 m/s
     
     // Air control (movement when not on ground)
     // Base Minecraft value is 0.02, but we need more to maintain speed without air friction
@@ -173,14 +173,15 @@ public abstract class LivingEntity extends Entity {
     
     /**
      * Flying movement - creative mode.
+     * Full control in all 3 axes (forward/back, left/right, up/down).
      */
     protected void travelFlying() {
-        // Get flying speed
+        // Get flying speed (includes sprint modifier if active)
         float flySpeed = this.getFlyingSpeed();
         
-        // Flying has much simpler physics
-        // Movement is applied directly in all 3 axes
-        this.moveRelative(flySpeed * 0.1f, new Vector3f(this.xxa, this.yya, this.zza));
+        // Flying: full control in all directions
+        // Direct application of input (not reduced like air control)
+        this.moveRelative(flySpeed, new Vector3f(this.xxa, this.yya, this.zza));
     }
     
     /**
@@ -234,20 +235,21 @@ public abstract class LivingEntity extends Entity {
      * For normal blocks: 0.6 * 0.91 = 0.546
      */
     protected void applyFriction() {
-        if (this.onGround) {
+        if (this.flying) {
+            // Flying: Apply lighter friction to allow faster speeds
+            // Use higher friction value (closer to 1.0) for less drag
+            float flyingFriction = 0.75f;  // Less friction = faster flying
+            this.deltaMovement.x *= flyingFriction;
+            this.deltaMovement.y *= flyingFriction;
+            this.deltaMovement.z *= flyingFriction;
+        } else if (this.onGround) {
             // Ground: Combine block slipperiness with base friction
-            // This gives stronger friction than 0.91 alone
             float blockFriction = SLIPPERINESS * GROUND_FRICTION;
             this.deltaMovement.x *= blockFriction;
             this.deltaMovement.z *= blockFriction;
         }
-        // Air: NO friction! Maintain horizontal velocity (Minecraft behavior)
+        // Air (not flying): NO friction! Maintain horizontal velocity
         // This allows bunny hopping without speed loss
-        
-        // Flying: apply friction to vertical movement
-        if (this.flying) {
-            this.deltaMovement.y *= (SLIPPERINESS * GROUND_FRICTION);
-        }
         
         // Stop tiny movements (prevents floating point drift)
         if (Math.abs(this.deltaMovement.x) < 0.003) this.deltaMovement.x = 0;
