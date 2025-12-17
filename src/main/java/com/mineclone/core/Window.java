@@ -17,6 +17,10 @@ public class Window {
     private boolean resized;
     private boolean vSync;
     
+    // Minecraft-style: Track key states for PRESS events only (not held)
+    private final boolean[] keyPressed = new boolean[GLFW_KEY_LAST + 1];
+    private final boolean[] keyJustPressed = new boolean[GLFW_KEY_LAST + 1];
+    
     public Window(String title, int width, int height, boolean vSync) {
         this.title = title;
         this.width = width;
@@ -56,10 +60,20 @@ public class Window {
             this.resized = true;
         });
         
-        // Setup key callback
+        // Setup key callback (Minecraft-style event-based input)
         glfwSetKeyCallback(windowHandle, (window, key, scancode, action, mods) -> {
             if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE) {
                 glfwSetWindowShouldClose(window, true);
+            }
+            
+            // Track key press/release events (not repeat!)
+            if (key >= 0 && key <= GLFW_KEY_LAST) {
+                if (action == GLFW_PRESS) {
+                    keyPressed[key] = true;
+                    keyJustPressed[key] = true;  // Mark as "just pressed" for this frame
+                } else if (action == GLFW_RELEASE) {
+                    keyPressed[key] = false;
+                }
             }
         });
         
@@ -94,8 +108,33 @@ public class Window {
         glClearColor(r, g, b, alpha);
     }
     
+    /**
+     * Check if key is currently held down (for continuous actions like movement).
+     * Minecraft-style: Use for WASD movement.
+     */
     public boolean isKeyPressed(int keyCode) {
-        return glfwGetKey(windowHandle, keyCode) == GLFW_PRESS;
+        if (keyCode < 0 || keyCode > GLFW_KEY_LAST) return false;
+        return keyPressed[keyCode];
+    }
+    
+    /**
+     * Check if key was JUST pressed this frame (not held).
+     * Minecraft-style: Use for toggle actions like F, jumping, etc.
+     * This returns true ONCE per key press, then resets next frame.
+     */
+    public boolean isKeyJustPressed(int keyCode) {
+        if (keyCode < 0 || keyCode > GLFW_KEY_LAST) return false;
+        return keyJustPressed[keyCode];
+    }
+    
+    /**
+     * Clear "just pressed" flags at end of frame (called by update()).
+     * Minecraft does this to ensure actions trigger ONCE per press.
+     */
+    private void clearJustPressed() {
+        for (int i = 0; i <= GLFW_KEY_LAST; i++) {
+            keyJustPressed[i] = false;
+        }
     }
     
     public boolean windowShouldClose() {
@@ -137,6 +176,7 @@ public class Window {
     public void update() {
         glfwSwapBuffers(windowHandle);
         glfwPollEvents();
+        clearJustPressed();  // Reset "just pressed" flags for next frame
     }
     
     public void cleanup() {

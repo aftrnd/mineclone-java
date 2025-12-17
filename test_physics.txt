@@ -1,0 +1,37 @@
+=== MINECRAFT MOVEMENT PHYSICS SIMULATION ===
+
+Constants (from Minecraft 1.21.11 source):
+- MOVEMENT_SPEED = 0.1
+- SLIPPERINESS = 0.6  
+- GROUND_FRICTION_BASE = 0.91
+
+Calculation:
+1. Movement factor = speed * (0.16277136 / (slipperiness^3))
+   = 0.1 * (0.16277136 / (0.6^3))
+   = 0.1 * (0.16277136 / 0.216)
+   = 0.1 * 0.7536
+   = 0.07536 blocks/tick
+
+2. Friction multiplier = slipperiness * 0.91
+   = 0.6 * 0.91
+   = 0.546
+
+Equilibrium (steady state when holding W):
+- Each tick: velocity += input * 0.07536 (acceleration)
+- Each tick: velocity *= 0.546 (friction)
+
+At equilibrium:
+acceleration = friction_loss
+0.07536 = velocity * (1 - 0.546)
+0.07536 = velocity * 0.454
+velocity = 0.166 blocks/tick
+
+At 20 TPS:
+velocity = 0.166 * 20 = 3.32 blocks/second
+
+BUT WE MEASURE: 1.8 blocks/second!
+
+That's 54% of calculated...
+
+WAIT! Let me check if we're applying friction twice or something...
+

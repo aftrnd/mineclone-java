@@ -5,9 +5,21 @@ import com.mineclone.core.engine.IGameLogic;
 import com.mineclone.core.input.MouseInput;
 import com.mineclone.core.utils.Timer;
 
+/**
+ * Game Engine with Minecraft-standard 20 TPS tick rate.
+ * 
+ * Architecture:
+ * - Fixed 20 TPS (ticks per second) for deterministic physics
+ * - Variable FPS for smooth rendering
+ * - Partial tick calculation for interpolation
+ * 
+ * Matches Minecraft's exact tick system.
+ */
 public class Engine {
+    // Minecraft standard: 20 TPS = 50ms per tick
+    private static final int TARGET_TPS = 20;
+    private static final float TICK_INTERVAL = 1.0f / TARGET_TPS;  // 0.05 seconds
     private static final int TARGET_FPS = 60;
-    private static final int TARGET_UPS = 30;
 
     private final Window window;
     private final IGameLogic gameLogic;
@@ -39,25 +51,35 @@ public class Engine {
         gameLogic.init(window);
     }
 
+    /**
+     * Main game loop with fixed 20 TPS tick rate.
+     * 
+     * Uses accumulator pattern to ensure consistent physics regardless of frame rate.
+     * Calculates partial tick for smooth rendering interpolation.
+     */
     private void gameLoop() {
-        float elapsedTime;
         float accumulator = 0f;
-        float interval = 1f / TARGET_UPS;
 
-        boolean running = true;
-        while (running && !window.shouldClose()) {
-            elapsedTime = timer.getElapsedTime();
+        while (!window.shouldClose()) {
+            float elapsedTime = timer.getElapsedTime();
             accumulator += elapsedTime;
 
+            // Process input every frame
             input();
 
-            while (accumulator >= interval) {
-                update(interval);
-                accumulator -= interval;
+            // Fixed timestep updates (20 TPS)
+            while (accumulator >= TICK_INTERVAL) {
+                update(TICK_INTERVAL);
+                accumulator -= TICK_INTERVAL;
             }
 
-            render();
+            // Calculate partial tick for interpolation (0.0 to 1.0)
+            float partialTick = accumulator / TICK_INTERVAL;
+            
+            // Render with interpolation
+            render(partialTick);
 
+            // Frame rate limiting
             if (!window.isvSync()) {
                 sync();
             }
@@ -85,8 +107,8 @@ public class Engine {
         gameLogic.update(interval, mouseInput);
     }
 
-    private void render() {
-        gameLogic.render(window);
+    private void render(float partialTick) {
+        gameLogic.render(window, partialTick);
         window.update();
     }
 

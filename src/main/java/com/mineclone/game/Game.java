@@ -9,20 +9,30 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 
 /**
- * Main game class for Minecraft clone
+ * Main game class for Minecraft clone.
+ * 
+ * Architecture:
+ * - LocalPlayer extends LivingEntity extends Entity
+ * - Engine handles 20 TPS tick rate
+ * - Game receives partialTick for smooth rendering
+ * - Camera interpolates between ticks
  */
 public class Game implements com.mineclone.core.engine.IGameLogic {
-    private Window window;  // Store window reference for flying controls
+    private Window window;
     private Camera camera;
-    private Player player;
+    private LocalPlayer player;
     private ChunkManager chunkManager;
     private Renderer renderer;
     private SimpleCrosshairRenderer crosshairRenderer;
     private SimpleBlockOutlineRenderer blockOutlineRenderer;
     private long lastDebugTime;
     private boolean mouseLookEnabled;
-    private RaycastResult currentLookingAt;  // Block player is currently looking at
-    private boolean wasSpacePressed;  // Track space key state for double-tap detection
+    private RaycastResult currentLookingAt;
+    
+    // Stats tracking
+    private long tickCount = 0;
+    private long lastStatsTime = System.currentTimeMillis();
+    private int ticksSinceLastStats = 0;
 
     private static final float FOV = (float) Math.toRadians(70);
     private static final float Z_NEAR = 0.01f;
@@ -31,8 +41,8 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
 
     @Override
     public void init(Window window) throws Exception {
-        this.window = window;  // Store window reference
-        System.out.println("=== Minecraft Clone - Improved Physics & Chunking ===");
+        this.window = window;
+        System.out.println("=== Minecraft Clone - Entity-Based Movement System ===");
 
         // Initialize OpenGL
         glEnable(GL_DEPTH_TEST);
@@ -40,14 +50,18 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
         glCullFace(GL_BACK);
         glFrontFace(GL_CCW);
 
-        // Create game objects
+        // Create chunk manager first (needed by player)
+        long worldSeed = new java.util.Random().nextLong();
+        System.out.println("World seed: " + worldSeed);
+        chunkManager = new ChunkManager(4, worldSeed);  // 4 chunk render distance
+        
+        // Create player with world reference
+        player = new LocalPlayer(chunkManager);
+        
+        // Create camera and rendering objects
         camera = new Camera();
-        player = new Player();
         crosshairRenderer = new SimpleCrosshairRenderer();
         blockOutlineRenderer = new SimpleBlockOutlineRenderer();
-        
-        // Create chunk manager with terrain generation
-        chunkManager = new ChunkManager(4, 12345L);  // 4 chunk render distance, seed 12345
         
         try {
             renderer = new Renderer();
@@ -55,27 +69,33 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
             throw new RuntimeException("Failed to create renderer", e);
         }
         
-        currentLookingAt = new RaycastResult();  // Initialize as no hit
+        // Initialize texture atlas
+        TextureAtlas textureAtlas = new TextureAtlas();
+        textureAtlas.load();
+        renderer.setTextureAtlas(textureAtlas);
+        Chunk.setTextureAtlas(textureAtlas);
+        
+        currentLookingAt = new RaycastResult();
 
         // Load initial chunks around spawn
-        chunkManager.updateLoadedChunks(player.getPosition().x, player.getPosition().z);
+        chunkManager.updateLoadedChunks((float)player.getX(), (float)player.getZ());
         System.out.println("Loaded " + chunkManager.getLoadedChunkCount() + " chunks");
         
-        // Adjust player spawn height to surface
-        int spawnX = (int) player.getPosition().x;
-        int spawnZ = (int) player.getPosition().z;
+        // Generate trees
+        chunkManager.generateTreesForAllChunks();
+        
+        // Spawn player at surface
+        int spawnX = 8;
+        int spawnZ = 8;
         int surfaceY = chunkManager.getSurfaceHeight(spawnX, spawnZ);
-        player.getPosition().set(spawnX, surfaceY + 1, spawnZ);  // +1 to spawn above ground
+        player.setPos(spawnX, surfaceY + 1, spawnZ);  // +1 to spawn above ground
         
         System.out.println("Player spawn: (" + spawnX + ", " + (surfaceY + 1) + ", " + spawnZ + ")");
-        System.out.println("Surface height: " + surfaceY);
-        System.out.println("Block below player: " + chunkManager.isBlockSolidAt(spawnX, surfaceY, spawnZ));
-
         System.out.println("=== Initialization Complete ===");
         System.out.println("=== CONTROLS ===");
         System.out.println("  WASD: Move");
+        System.out.println("  SHIFT: Sprint");
         System.out.println("  SPACE: Jump (double-tap to toggle FLYING mode)");
-        System.out.println("  SHIFT: Fly down (when flying)");
         System.out.println("  F: Toggle mouse look");
         System.out.println("  Left Click: Break block");
         System.out.println("  Right Click: Place block");
@@ -83,81 +103,89 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
 
     @Override
     public void input(Window window, MouseInput mouseInput) {
-        // Movement input (WASD)
-        float moveForward = 0;
-        float moveRight = 0;
-
-        if (window.isKeyPressed(GLFW_KEY_W)) {
-            moveForward += 1;
-        }
-        if (window.isKeyPressed(GLFW_KEY_S)) moveForward -= 1;
-        if (window.isKeyPressed(GLFW_KEY_A)) moveRight -= 1;
-        if (window.isKeyPressed(GLFW_KEY_D)) moveRight += 1;
-
-        // Jump/Fly input (Space) - detect double-tap
-        boolean isSpacePressed = window.isKeyPressed(GLFW_KEY_SPACE);
-        if (isSpacePressed && !wasSpacePressed) {
-            // Space just pressed (not held)
-            boolean wasDoubleTap = player.onSpacePressed();
-            if (!wasDoubleTap && !player.isFlying()) {
-                // Single tap and not flying = jump
-                player.jump();
+        // Read keyboard state
+        boolean forward = window.isKeyPressed(GLFW_KEY_W);
+        boolean backward = window.isKeyPressed(GLFW_KEY_S);
+        boolean left = window.isKeyPressed(GLFW_KEY_A);
+        boolean right = window.isKeyPressed(GLFW_KEY_D);
+        boolean jump = window.isKeyPressed(GLFW_KEY_SPACE);
+        boolean sprint = window.isKeyPressed(GLFW_KEY_LEFT_SHIFT);
+        boolean up = window.isKeyPressed(GLFW_KEY_SPACE);     // For flying
+        boolean down = window.isKeyPressed(GLFW_KEY_LEFT_SHIFT); // For flying
+        
+        // Update player input
+        player.setInput(forward, backward, left, right, jump, sprint, up, down);
+        
+        // Handle space press for flying toggle
+        if (window.isKeyJustPressed(GLFW_KEY_SPACE)) {
+            boolean wasDoubleTap = player.onSpacePress();
+            if (wasDoubleTap) {
+                System.out.println("✈️ Flying toggled!");
             }
         }
-        wasSpacePressed = isSpacePressed;
-
+        
         // Toggle mouse look (F key)
-        if (window.isKeyPressed(GLFW_KEY_F)) {
+        if (window.isKeyJustPressed(GLFW_KEY_F)) {
             mouseLookEnabled = !mouseLookEnabled;
             if (mouseLookEnabled) {
                 window.setCursorMode(GLFW_CURSOR_DISABLED);
-                System.out.println(">>> Mouse look ENABLED - cursor hidden and captured");
+                System.out.println(">>> Mouse look ENABLED");
             } else {
                 window.setCursorMode(GLFW_CURSOR_NORMAL);
-                System.out.println(">>> Mouse look DISABLED - cursor visible");
+                System.out.println(">>> Mouse look DISABLED");
             }
         }
 
-        // Apply movement input to player (player handles physics internally)
-        if (moveForward != 0 || moveRight != 0) {
-            player.move(moveForward, moveRight);
-        }
-
-        // Mouse look - when enabled
+        // Mouse look
         if (mouseLookEnabled) {
             Vector2f displacement = mouseInput.getDisplVec();
             if (displacement.x != 0 || displacement.y != 0) {
-                // Apply mouse movement to player rotation
-                // Yaw (horizontal) and pitch (vertical) with sensitivity
-                float yawChange = displacement.x * MOUSE_SENSITIVITY;
-                float pitchChange = displacement.y * MOUSE_SENSITIVITY;  // Fixed: removed negative for proper mouse direction
-                
-                player.rotate(yawChange, pitchChange);
+                player.handleMouseLook(displacement.x, displacement.y, MOUSE_SENSITIVITY);
             }
             
-            // Mouse button handling (left = break, right = place)
-            // Use click events to avoid repeated breaking/placing
+            // Mouse button handling
             if (mouseInput.wasLeftButtonClicked()) {
-                System.out.println(">>> LEFT CLICK detected!");
                 handleBlockBreaking();
             }
             if (mouseInput.wasRightButtonClicked()) {
-                System.out.println(">>> RIGHT CLICK detected!");
                 handleBlockPlacing();
             }
         }
+        
+        // Clear input flags
+        window.clearJustPressed();
     }
 
     @Override
     public void update(float interval, MouseInput mouseInput) {
-        // Update loaded chunks based on player position
-        chunkManager.updateLoadedChunks(player.getPosition().x, player.getPosition().z);
+        // Tick player once per call (Engine handles 20 TPS timing)
+        player.tick();
+        tickCount++;
+        ticksSinceLastStats++;
         
-        // Update player physics at fixed timestep
-        updatePlayerPhysics(window, interval);
+        // Update loaded chunks
+        chunkManager.updateLoadedChunks((float)player.getX(), (float)player.getZ());
         
-        // Perform raycasting to find which block player is looking at
-        updateRaycast();
+        // Log stats every second
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastStatsTime >= 1000) {
+            float elapsedSeconds = (currentTime - lastStatsTime) / 1000.0f;
+            float actualTPS = ticksSinceLastStats / elapsedSeconds;
+            
+            // Calculate player speed (blocks/second)
+            org.joml.Vector3d vel = player.getDeltaMovement();
+            double horizontalSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+            double speedBlocksPerSecond = horizontalSpeed * 20.0;  // velocity is per tick, 20 TPS
+            
+            System.out.printf("🎮 TPS: %.1f | Speed: %.2f b/s | Flying: %s | Sprint: %s | Ground: %s%n",
+                actualTPS, speedBlocksPerSecond, 
+                player.isFlying() ? "YES" : "NO",
+                player.isSprinting() ? "YES" : "NO",
+                player.isOnGround() ? "YES" : "NO");
+            
+            ticksSinceLastStats = 0;
+            lastStatsTime = currentTime;
+        }
 
         // Debug output every 2 seconds
         long now = System.currentTimeMillis();
@@ -165,9 +193,9 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
             String lookingAt = currentLookingAt.isHit() ? 
                 "block at " + currentLookingAt.getBlockPos() : 
                 "nothing";
-            System.out.printf("Player: (%.1f, %.1f, %.1f) pitch=%.1f yaw=%.1f | Target: %s%n",
-                player.getPosition().x, player.getPosition().y, player.getPosition().z,
-                player.getRotation().x, player.getRotation().y,
+            System.out.printf("📍 Position: (%.1f, %.1f, %.1f) | Pitch: %.1f° | Yaw: %.1f° | %s%n",
+                player.getX(), player.getY(), player.getZ(),
+                player.getXRot(), player.getYRot(),
                 lookingAt);
             lastDebugTime = now;
         }
@@ -177,11 +205,8 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
      * Update raycasting to detect which block the player is looking at.
      */
     private void updateRaycast() {
-        // Get camera position and forward direction
         org.joml.Vector3f cameraPos = camera.getPosition();
         org.joml.Vector3f forward = camera.getForward();
-        
-        // Perform raycast
         currentLookingAt = ImprovedRaycaster.raycast(cameraPos, forward, chunkManager);
     }
     
@@ -201,7 +226,6 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
     
     /**
      * Handle block placing (right mouse button).
-     * Places a block adjacent to the one being looked at.
      */
     private void handleBlockPlacing() {
         if (!currentLookingAt.isHit()) {
@@ -211,13 +235,11 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
         
         org.joml.Vector3i adjacentPos = currentLookingAt.getAdjacentPos();
         
-        // Don't place a block where the player is standing
-        org.joml.Vector3f playerPos = player.getPosition();
-        int playerBlockX = (int) Math.floor(playerPos.x);
-        int playerBlockY = (int) Math.floor(playerPos.y);
-        int playerBlockZ = (int) Math.floor(playerPos.z);
+        // Don't place inside player
+        int playerBlockX = (int) Math.floor(player.getX());
+        int playerBlockY = (int) Math.floor(player.getY());
+        int playerBlockZ = (int) Math.floor(player.getZ());
         
-        // Check if placing would overlap with player (feet or head)
         if (adjacentPos.x == playerBlockX && 
             adjacentPos.z == playerBlockZ &&
             (adjacentPos.y == playerBlockY || adjacentPos.y == playerBlockY + 1)) {
@@ -225,152 +247,27 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
             return;
         }
         
-        // Place a grass block (you could make this selectable later)
         chunkManager.placeBlock(adjacentPos.x, adjacentPos.y, adjacentPos.z, Block.Type.GRASS);
         System.out.println(">>> PLACED block at: (" + adjacentPos.x + ", " + adjacentPos.y + ", " + adjacentPos.z + ")");
     }
-    
-    /**
-     * Update player physics with proper AABB collision detection.
-     * Player dimensions: 0.6 blocks wide, 1.8 blocks tall (like Minecraft)
-     */
-    private void updatePlayerPhysics(Window window, float deltaTime) {
-        // Store last frame state for interpolation
-        player.updateLastState();
-        
-        // Apply gravity ONLY if not flying and not on ground
-        if (!player.isFlying() && !player.isOnGround()) {
-            player.getVelocity().y -= 32.0f * deltaTime;
-            
-            // Terminal velocity cap
-            if (player.getVelocity().y < -78.4f) {
-                player.getVelocity().y = -78.4f;
-            }
-        }
-        
-        // When flying, handle vertical movement with Space/Shift
-        if (player.isFlying()) {
-            // Space = fly up, Shift = fly down
-            if (window.isKeyPressed(GLFW_KEY_SPACE)) {
-                player.getVelocity().y = player.getMovementSpeed();
-            } else if (window.isKeyPressed(GLFW_KEY_LEFT_SHIFT)) {
-                player.getVelocity().y = -player.getMovementSpeed();
-            } else {
-                // No vertical input = hover in place
-                player.getVelocity().y = 0;
-            }
-        }
-        
-        // Player bounding box (Minecraft dimensions)
-        final float PLAYER_WIDTH = 0.6f;
-        final float PLAYER_HEIGHT = 1.8f;
-        final float PLAYER_HALF_WIDTH = PLAYER_WIDTH / 2.0f;
-        
-        org.joml.Vector3f pos = player.getPosition();
-        org.joml.Vector3f vel = player.getVelocity();
-        
-        // Collision detection (disabled when flying)
-        if (!player.isFlying()) {
-            // Move X axis with collision
-            pos.x += vel.x * deltaTime;
-            if (checkPlayerCollision(pos.x, pos.y, pos.z, PLAYER_HALF_WIDTH, PLAYER_HEIGHT)) {
-                // Collision on X axis - snap back
-                pos.x -= vel.x * deltaTime;
-                vel.x = 0;
-            }
-            
-            // Move Z axis with collision
-            pos.z += vel.z * deltaTime;
-            if (checkPlayerCollision(pos.x, pos.y, pos.z, PLAYER_HALF_WIDTH, PLAYER_HEIGHT)) {
-                // Collision on Z axis - snap back
-                pos.z -= vel.z * deltaTime;
-                vel.z = 0;
-            }
-            
-            // Move Y axis with collision
-            pos.y += vel.y * deltaTime;
-            boolean verticalCollision = checkPlayerCollision(pos.x, pos.y, pos.z, PLAYER_HALF_WIDTH, PLAYER_HEIGHT);
-            
-            if (verticalCollision) {
-                if (vel.y < 0) {
-                    // Hit ground - snap ABOVE the block we hit
-                    int groundBlockY = (int) Math.floor(pos.y);  // The block we're inside/touching
-                    pos.y = groundBlockY + 1.0f;  // Stand ON TOP of it (feet at +1)
-                    vel.y = 0;
-                    player.setOnGround(true);
-                } else {
-                    // Hit ceiling
-                    pos.y -= vel.y * deltaTime;
-                    vel.y = 0;
-                }
-            } else {
-                player.setOnGround(false);
-            }
-        } else {
-            // Flying mode - no collision, free movement
-            pos.x += vel.x * deltaTime;
-            pos.y += vel.y * deltaTime;
-            pos.z += vel.z * deltaTime;
-            player.setOnGround(false);
-        }
-        
-        // Apply friction (Minecraft uses 0.546 for normal blocks = 0.6 * 0.91)
-        // Higher friction = more responsive movement (less sliding)
-        float friction = player.isOnGround() ? 0.50f : 0.98f;
-        vel.x *= friction;
-        vel.z *= friction;
-        
-        // Stop tiny movements (prevent jitter)
-        if (Math.abs(vel.x) < 0.003f) vel.x = 0;
-        if (Math.abs(vel.z) < 0.003f) vel.z = 0;
-    }
-    
-    /**
-     * Check if player's AABB collides with any solid blocks.
-     * Player feet position is at feetY, extends up to feetY + height
-     */
-    private boolean checkPlayerCollision(float centerX, float feetY, float centerZ, float halfWidth, float height) {
-        // Calculate the range of blocks to check
-        // Add small epsilon to ensure we check boundary blocks
-        float epsilon = 0.001f;
-        
-        int minX = (int) Math.floor(centerX - halfWidth + epsilon);
-        int maxX = (int) Math.floor(centerX + halfWidth - epsilon);
-        int minY = (int) Math.floor(feetY + epsilon);  // Feet position
-        int maxY = (int) Math.floor(feetY + height - epsilon);  // Head position
-        int minZ = (int) Math.floor(centerZ - halfWidth + epsilon);
-        int maxZ = (int) Math.floor(centerZ + halfWidth - epsilon);
-        
-        // Check all blocks player overlaps with
-        for (int x = minX; x <= maxX; x++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int z = minZ; z <= maxZ; z++) {
-                    if (chunkManager.isBlockSolidAt(x, y, z)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        
-        return false;
-    }
 
     @Override
-    public void render(Window window) {
+    public void render(Window window, float partialTick) {
         // Handle window resize
         if (window.isResized()) {
             glViewport(0, 0, window.getWidth(), window.getHeight());
             window.setResized(false);
         }
 
-        // Clear screen once (sky blue)
+        // Clear screen (sky blue)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glClearColor(0.5f, 0.8f, 1.0f, 1.0f);
 
         // Setup camera with interpolation for smooth rendering
-        // TODO: Get actual partial tick from engine
-        float partialTick = 1.0f; // For now, use 1.0 (no interpolation)
         camera.setup(player, partialTick);
+        
+        // Update raycast with interpolated camera position
+        updateRaycast();
 
         // Create projection matrix
         Matrix4f projectionMatrix = new Matrix4f().perspective(
@@ -380,7 +277,7 @@ public class Game implements com.mineclone.core.engine.IGameLogic {
             Z_FAR
         );
 
-        // Render all loaded chunks at their world positions
+        // Render all loaded chunks
         for (Chunk chunk : chunkManager.getLoadedChunks()) {
             renderer.render(camera, chunk, projectionMatrix);
         }

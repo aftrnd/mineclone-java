@@ -2,6 +2,7 @@ package com.mineclone.game;
 
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
+import org.joml.Vector3d;
 import org.joml.Vector3f;
 
 /**
@@ -30,15 +31,11 @@ public class Camera {
     // View matrix (cached)
     private Matrix4f viewMatrix;
     
-    // Tracked entity (player)
-    private Player trackedPlayer;
+    // Tracked entity (using new Entity system)
+    private Entity trackedEntity;
     
     // Interpolation for smooth rendering
     private float partialTick;
-    
-    // Eye height interpolation (for crouching, etc.)
-    private float eyeHeight;
-    private float eyeHeightOld;
     
     // Camera modes
     private boolean initialized;
@@ -58,9 +55,6 @@ public class Camera {
         initialized = false;
         detached = false;
         
-        eyeHeight = 1.62f; // Minecraft player eye height
-        eyeHeightOld = eyeHeight;
-        
         updateViewMatrix();
     }
 
@@ -68,36 +62,21 @@ public class Camera {
      * Setup camera for this frame (Minecraft-style).
      * Called every render frame with interpolation factor.
      * 
-     * @param player The player to track
+     * @param entity The entity to track (usually LocalPlayer)
      * @param partialTick Interpolation factor (0.0 to 1.0) between physics ticks
      */
-    public void setup(Player player, float partialTick) {
-        this.trackedPlayer = player;
+    public void setup(Entity entity, float partialTick) {
+        this.trackedEntity = entity;
         this.partialTick = partialTick;
         this.initialized = true;
         
-        // Interpolate position between last and current physics tick
-        Vector3f currentPos = player.getPosition();
-        Vector3f lastPos = player.getLastPosition();
+        // Get interpolated eye position from entity
+        Vector3d eyePos = entity.getEyePosition(partialTick);
+        position.set((float)eyePos.x, (float)eyePos.y, (float)eyePos.z);
         
-        // Lerp position for smooth movement
-        float interpX = lerp(lastPos.x, currentPos.x, partialTick);
-        float interpY = lerp(lastPos.y, currentPos.y, partialTick);
-        float interpZ = lerp(lastPos.z, currentPos.z, partialTick);
-        
-        // Interpolate eye height for smooth transitions
-        float interpEyeHeight = lerp(eyeHeightOld, eyeHeight, partialTick);
-        
-        // Set camera position at eye level
-        position.set(interpX, interpY + interpEyeHeight, interpZ);
-        
-        // Interpolate rotation
-        Vector3f currentRot = player.getRotation();
-        Vector3f lastRot = player.getLastRotation();
-        
-        rotation.x = lerpAngle(lastRot.x, currentRot.x, partialTick);
-        rotation.y = lerpAngle(lastRot.y, currentRot.y, partialTick);
-        rotation.z = 0; // No roll
+        // Get interpolated rotation from entity
+        Vector3f entityRot = entity.getRotation(partialTick);
+        rotation.set(entityRot.x, entityRot.y, 0); // No roll
         
         // Update quaternion from Euler angles
         updateQuaternion();
@@ -110,10 +89,10 @@ public class Camera {
     }
 
     /**
-     * Simple setup without interpolation (for when player doesn't move).
+     * Simple setup without interpolation (for when entity doesn't move).
      */
-    public void setupSimple(Player player) {
-        setup(player, 1.0f); // Full interpolation = use current state
+    public void setupSimple(Entity entity) {
+        setup(entity, 1.0f); // Full interpolation = use current state
     }
 
     /**
@@ -173,32 +152,6 @@ public class Camera {
         viewMatrix.translate(-position.x, -position.y, -position.z);
     }
 
-    /**
-     * Linear interpolation helper.
-     */
-    private float lerp(float start, float end, float alpha) {
-        return start + (end - start) * alpha;
-    }
-
-    /**
-     * Angle interpolation (handles wraparound correctly).
-     */
-    private float lerpAngle(float start, float end, float alpha) {
-        // Handle wraparound (e.g., 350° to 10° should go through 0°, not 180°)
-        float diff = end - start;
-        while (diff > 180) diff -= 360;
-        while (diff < -180) diff += 360;
-        
-        return start + diff * alpha;
-    }
-
-    /**
-     * Set eye height (for crouching, swimming, etc.).
-     */
-    public void setEyeHeight(float height) {
-        this.eyeHeightOld = this.eyeHeight;
-        this.eyeHeight = height;
-    }
 
     /**
      * Set rotation directly (for manual camera control).
@@ -222,7 +175,7 @@ public class Camera {
     
     public boolean isInitialized() { return initialized; }
     public boolean isDetached() { return detached; }
-    public Player getTrackedPlayer() { return trackedPlayer; }
+    public Entity getTrackedEntity() { return trackedEntity; }
     
     public void setDetached(boolean detached) { this.detached = detached; }
 }
