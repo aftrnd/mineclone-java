@@ -7,7 +7,8 @@ public class Main {
     public static void main(String[] args) {
         try {
             Game game = new Game();
-            Engine engine = new Engine("MineClone", 1280, 720, true, game);
+            // Minecraft's default window size: 854x480
+            Engine engine = new Engine("MineClone", 854, 480, true, game);
             engine.run();
         } catch (Exception e) {
             e.printStackTrace();

@@ -28,6 +28,8 @@ public class ChunkManager {
     
     // Render distance (in chunks)
     private int renderDistance;
+    private int initialLoadRadius;  // Smaller radius for initial spawn chunks
+    private boolean progressiveLoadingEnabled = false;  // Enable after initial load
     
     // Statistics
     private int chunksLoaded;
@@ -35,7 +37,7 @@ public class ChunkManager {
     private boolean initialLoadComplete = false;  // Track if initial chunk loading is done
     
     // Minecraft-style: Throttle chunk loading to avoid lag spikes
-    private static final int MAX_CHUNKS_PER_FRAME = 2;  // Only load 2 chunks per frame max
+    private static final int MAX_CHUNKS_PER_FRAME = 8;  // Load more chunks per frame for faster loading
     
     // Minecraft-style: Async mesh generation (background thread)
     private final java.util.concurrent.ExecutorService meshGenerationExecutor;
@@ -49,6 +51,7 @@ public class ChunkManager {
     public ChunkManager(int renderDistance, long seed) {
         this.chunks = new ConcurrentHashMap<>();
         this.renderDistance = renderDistance;
+        this.initialLoadRadius = renderDistance;  // Default to full radius
         this.terrainGenerator = new TerrainGenerator(seed);
         this.chunksLoaded = 0;
         this.chunksGenerated = 0;
@@ -77,47 +80,58 @@ public class ChunkManager {
     public Chunk getChunk(int chunkX, int chunkZ) {
         long key = new ChunkPos(chunkX, chunkZ).toLong();
         
-        Chunk chunk = chunks.computeIfAbsent(key, k -> {
+        // Minecraft-style: Return empty chunk IMMEDIATELY if doesn't exist
+        // All generation happens on background threads (non-blocking!)
+        Chunk chunk = chunks.get(key);
+        if (chunk == null) {
+            // Create empty chunk synchronously (fast!)
             Chunk newChunk = new Chunk(chunkX, chunkZ);
-            newChunk.setChunkManager(this);  // Set reference for cross-chunk queries
-            generateTerrain(newChunk);
-            
-            chunksGenerated++;
-            chunksLoaded++;
-            return newChunk;
-        });
-        
-        // Generate trees AFTER chunk is in map (so placeBlock can find it)
-        // Skip if initial load isn't complete (batch generation happens later)
-        if (initialLoadComplete && chunk != null && !chunk.hasTreesGenerated()) {
-            long startTotal = System.currentTimeMillis();
-            
-            long chunkSeed = (long) chunkX * 31 + (long) chunkZ * 17;
-            java.util.Random random = new java.util.Random(chunkSeed + terrainGenerator.hashCode());
-            
-            long treeStart = System.currentTimeMillis();
-            int treesGenerated = generateTreesForChunk(chunk, random);
-            long treeTime = System.currentTimeMillis() - treeStart;
-            
-            chunk.setTreesGenerated(true);
-            
-            // Recalculate sky light AFTER trees
-            long lightStart = System.currentTimeMillis();
-            chunk.calculateSkyLight();
-            long lightTime = System.currentTimeMillis() - lightStart;
-            
-            chunk.markDirty();
-            
-            // Queue mesh generation on background thread (Minecraft-style async!)
-            queueMeshGeneration(chunk);
-            
-            long totalTime = System.currentTimeMillis() - startTotal;
-            if (totalTime > 20) {  // Log slow chunks (>20ms = lag spike)
-                System.out.println("⚠ SLOW CHUNK (" + chunkX + "," + chunkZ + "): Trees=" + treeTime + "ms, Light=" + lightTime + "ms, TOTAL=" + totalTime + "ms");
+            newChunk.setChunkManager(this);
+            chunk = chunks.putIfAbsent(key, newChunk);
+            if (chunk == null) {
+                chunk = newChunk;
+                chunksGenerated++;
+                chunksLoaded++;
+                
+                // Queue EVERYTHING for background generation (Minecraft-style!)
+                Chunk finalChunk = newChunk;
+                meshGenerationExecutor.submit(() -> {
+                    try {
+                        long startTotal = System.currentTimeMillis();
+                        
+                        // 1. Generate terrain (ASYNC!)
+                        long terrainStart = System.currentTimeMillis();
+                        generateTerrain(finalChunk);
+                        long terrainTime = System.currentTimeMillis() - terrainStart;
+                        
+                        // 2. Generate trees (ASYNC!)
+                        long chunkSeed = (long) chunkX * 31 + (long) chunkZ * 17;
+                        java.util.Random random = new java.util.Random(chunkSeed + terrainGenerator.hashCode());
+                        long treeStart = System.currentTimeMillis();
+                        int treesGenerated = generateTreesForChunk(finalChunk, random);
+                        long treeTime = System.currentTimeMillis() - treeStart;
+                        finalChunk.setTreesGenerated(true);
+                        
+                        // 3. Calculate lighting (ASYNC!)
+                        long lightStart = System.currentTimeMillis();
+                        finalChunk.calculateSkyLight();
+                        long lightTime = System.currentTimeMillis() - lightStart;
+                        
+                        finalChunk.markDirty();
+                        
+                        // 4. Queue mesh generation (ASYNC!)
+                        queueMeshGeneration(finalChunk);
+                        
+                        long totalTime = System.currentTimeMillis() - startTotal;
+                        if (totalTime > 100) {  // Log slow chunks
+                            System.out.println("⏱ ASYNC CHUNK (" + chunkX + "," + chunkZ + "): Terrain=" + terrainTime + "ms, Trees=" + treeTime + "ms, Light=" + lightTime + "ms, TOTAL=" + totalTime + "ms [BACKGROUND]");
+                        }
+                    } catch (Exception e) {
+                        System.err.println("❌ ERROR generating chunk (" + chunkX + "," + chunkZ + "): " + e.getMessage());
+                        e.printStackTrace();
+                    }
+                });
             }
-        } else if (chunk != null && !chunk.hasTreesGenerated()) {
-            // Initial load - calculate sky light (trees come later in batch)
-            chunk.calculateSkyLight();
         }
         
         return chunk;
@@ -171,18 +185,25 @@ public class ChunkManager {
             int localX = worldX & 15;
             int localZ = worldZ & 15;
             
+            Block oldBlock = chunk.getBlock(localX, worldY, localZ);
+            int oldLight = oldBlock.getSkyLight();
+            
             chunk.setBlock(localX, worldY, localZ, Block.Type.AIR);
             
             // Recalculate sky light for this column (light can now pass through!)
             recalculateSkyLightColumn(chunk, localX, localZ);
+            
+            Block newBlock = chunk.getBlock(localX, worldY, localZ);
+            int newLight = newBlock.getSkyLight();
+            
+            System.out.println(String.format("🔨 Block broken at (%d, %d, %d) - Light: %d → %d", 
+                worldX, worldY, worldZ, oldLight, newLight));
             
             chunk.markDirty();  // Force mesh regeneration
             
             // PERFORMANCE: Mark adjacent chunks dirty if block is at edge
             // This ensures proper face culling at chunk boundaries
             markAdjacentChunksDirty(localX, localZ, pos);
-            
-            System.out.println("Block broken at (" + worldX + ", " + worldY + ", " + worldZ + ")");
         }
     }
     
@@ -231,7 +252,7 @@ public class ChunkManager {
     
     /**
      * Recalculate sky light for a single column when a block is placed or broken.
-     * This ensures proper shadows appear immediately.
+     * Also propagates light horizontally to adjacent columns using flood-fill.
      */
     private void recalculateSkyLightColumn(Chunk chunk, int localX, int localZ) {
         int currentLight = 15;  // Start with full sky light at top
@@ -239,9 +260,15 @@ public class ChunkManager {
         // Scan from top down
         for (int y = Chunk.HEIGHT - 1; y >= 0; y--) {
             Block block = chunk.getBlock(localX, y, localZ);
+            int oldLight = block.getSkyLight();
             
             // Set sky light for this block
             block.setSkyLight(currentLight);
+            
+            // If light changed significantly, propagate to neighbors
+            if (Math.abs(currentLight - oldLight) > 1) {
+                propagateLightHorizontal(chunk, localX, y, localZ, currentLight);
+            }
             
             // If we hit an opaque block, stop light propagation
             if (block.isSolid() && !block.getType().isTransparent()) {
@@ -256,32 +283,107 @@ public class ChunkManager {
     }
     
     /**
-     * Mark adjacent chunks as dirty if a block change occurs at a chunk edge.
-     * This ensures proper face culling at chunk boundaries.
+     * Propagate light horizontally to adjacent blocks (simple flood-fill).
+     * This ensures caves and tunnels get properly lit when you dig.
+     */
+    private void propagateLightHorizontal(Chunk chunk, int x, int y, int z, int lightLevel) {
+        if (lightLevel <= 1) return;  // Don't propagate very dim light
+        
+        // Check 4 horizontal neighbors (N, S, E, W)
+        int[][] neighbors = {{-1,0}, {1,0}, {0,-1}, {0,1}};
+        
+        int propagatedCount = 0;
+        for (int[] offset : neighbors) {
+            int nx = x + offset[0];
+            int nz = z + offset[1];
+            
+            // Skip if out of chunk bounds (would need to check adjacent chunks)
+            if (nx < 0 || nx >= 16 || nz < 0 || nz >= 16) continue;
+            
+            Block neighbor = chunk.getBlock(nx, y, nz);
+            if (neighbor == null) continue;
+            
+            // Light diminishes by 1 as it spreads
+            int newLight = lightLevel - 1;
+            
+            // Only update if this would make the neighbor brighter
+            if (newLight > neighbor.getSkyLight()) {
+                // Only propagate through air or transparent blocks
+                if (neighbor.getType() == Block.Type.AIR || neighbor.getType().isTransparent()) {
+                    int oldLight = neighbor.getSkyLight();
+                    neighbor.setSkyLight(newLight);
+                    propagatedCount++;
+                    
+                    if (propagatedCount <= 2) {  // Only log first few to avoid spam
+                        System.out.println(String.format("  💡 Light propagated to (%d,%d,%d): %d → %d", 
+                            nx, y, nz, oldLight, newLight));
+                    }
+                    
+                    // Recursively propagate (with depth limit via lightLevel check)
+                    propagateLightHorizontal(chunk, nx, y, nz, newLight);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Mark adjacent chunks as dirty AND recalculate their lighting at chunk edges.
+     * This ensures proper lighting propagation across chunk boundaries.
      */
     private void markAdjacentChunksDirty(int localX, int localZ, ChunkPos pos) {
-        // Check if block is at chunk edge
+        // Check if block is at chunk edge and update adjacent chunks' lighting
         if (localX == 0) {
-            // West edge - mark western neighbor dirty
+            // West edge - update western neighbor's lighting at edge
             Chunk westChunk = chunks.get(new ChunkPos(pos.x() - 1, pos.z()).toLong());
-            if (westChunk != null) westChunk.markDirty();
+            if (westChunk != null) {
+                westChunk.markDirty();
+                recalculateSkyLightColumn(westChunk, 15, localZ);
+                System.out.println("  🔄 Updated adjacent chunk lighting at west boundary");
+            }
         } else if (localX == 15) {
-            // East edge - mark eastern neighbor dirty
+            // East edge - update eastern neighbor's lighting at edge
             Chunk eastChunk = chunks.get(new ChunkPos(pos.x() + 1, pos.z()).toLong());
-            if (eastChunk != null) eastChunk.markDirty();
+            if (eastChunk != null) {
+                eastChunk.markDirty();
+                recalculateSkyLightColumn(eastChunk, 0, localZ);
+                System.out.println("  🔄 Updated adjacent chunk lighting at east boundary");
+            }
         }
         
         if (localZ == 0) {
-            // South edge - mark southern neighbor dirty
+            // South edge - update southern neighbor's lighting at edge
             Chunk southChunk = chunks.get(new ChunkPos(pos.x(), pos.z() - 1).toLong());
-            if (southChunk != null) southChunk.markDirty();
+            if (southChunk != null) {
+                southChunk.markDirty();
+                recalculateSkyLightColumn(southChunk, localX, 15);
+                System.out.println("  🔄 Updated adjacent chunk lighting at south boundary");
+            }
         } else if (localZ == 15) {
-            // North edge - mark northern neighbor dirty
+            // North edge - update northern neighbor's lighting at edge
             Chunk northChunk = chunks.get(new ChunkPos(pos.x(), pos.z() + 1).toLong());
-            if (northChunk != null) northChunk.markDirty();
+            if (northChunk != null) {
+                northChunk.markDirty();
+                recalculateSkyLightColumn(northChunk, localX, 0);
+                System.out.println("  🔄 Updated adjacent chunk lighting at north boundary");
+            }
         }
     }
 
+    /**
+     * Set initial load radius (smaller for fast startup).
+     */
+    public void setInitialLoadRadius(int radius) {
+        this.initialLoadRadius = radius;
+    }
+    
+    /**
+     * Enable progressive loading (allow chunks beyond initial radius to load).
+     */
+    public void enableProgressiveLoading() {
+        this.progressiveLoadingEnabled = true;
+        this.initialLoadComplete = true;  // Allow async tree generation
+    }
+    
     /**
      * Update loaded chunks based on player position.
      * Loads new chunks in range, unloads far chunks.
@@ -293,14 +395,17 @@ public class ChunkManager {
         // Minecraft-style throttling: Only load a few chunks per frame
         int chunksLoadedThisFrame = 0;
         
+        // Use smaller radius during initial load for INSTANT startup
+        int activeRadius = progressiveLoadingEnabled ? renderDistance : initialLoadRadius;
+        
         // Load chunks in render distance (prioritize closest first)
-        for (int radius = 0; radius <= renderDistance && chunksLoadedThisFrame < MAX_CHUNKS_PER_FRAME; radius++) {
+        for (int radius = 0; radius <= activeRadius && chunksLoadedThisFrame < MAX_CHUNKS_PER_FRAME; radius++) {
             for (int x = -radius; x <= radius && chunksLoadedThisFrame < MAX_CHUNKS_PER_FRAME; x++) {
                 for (int z = -radius; z <= radius && chunksLoadedThisFrame < MAX_CHUNKS_PER_FRAME; z++) {
                     // Only load chunks on current radius ring
                     if (Math.abs(x) == radius || Math.abs(z) == radius) {
                         // Only load chunks within circular radius
-                        if (x * x + z * z <= renderDistance * renderDistance) {
+                        if (x * x + z * z <= activeRadius * activeRadius) {
                             int chunkX = playerChunk.x() + x;
                             int chunkZ = playerChunk.z() + z;
                             long key = new ChunkPos(chunkX, chunkZ).toLong();
@@ -520,7 +625,7 @@ public class ChunkManager {
      * Queue a chunk for mesh generation on background thread (Minecraft-style).
      * This prevents lag spikes from mesh generation.
      */
-    private void queueMeshGeneration(Chunk chunk) {
+    public void queueMeshGeneration(Chunk chunk) {
         meshGenerationExecutor.submit(() -> {
             try {
                 // Generate mesh on background thread (CPU work happens here)

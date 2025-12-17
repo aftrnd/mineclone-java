@@ -87,6 +87,27 @@ public class Camera {
         // Rebuild view matrix
         updateViewMatrix();
     }
+    
+    /**
+     * Setup camera with view bobbing (Minecraft-style walking animation).
+     * 
+     * @param entity The entity to track
+     * @param partialTick Interpolation factor
+     * @param enableViewBobbing Whether to apply view bobbing effect
+     */
+    public void setup(Entity entity, float partialTick, boolean enableViewBobbing) {
+        // Standard setup
+        setup(entity, partialTick);
+        
+        // Apply view bobbing if enabled and entity is a LivingEntity
+        // BUT NOT when flying! (Minecraft disables bobbing when flying)
+        if (enableViewBobbing && entity instanceof LivingEntity) {
+            LivingEntity livingEntity = (LivingEntity) entity;
+            if (!livingEntity.isFlying()) {  // Disable when flying!
+                applyViewBobbing(livingEntity, partialTick);
+            }
+        }
+    }
 
     /**
      * Simple setup without interpolation (for when entity doesn't move).
@@ -150,6 +171,51 @@ public class Camera {
         
         // Translate (negative because we move world, not camera)
         viewMatrix.translate(-position.x, -position.y, -position.z);
+    }
+    
+    /**
+     * Apply view bobbing effect (Minecraft's exact walking animation).
+     * This creates the head bob when walking.
+     * 
+     * Based on net.minecraft.client.renderer.GameRenderer.bobView()
+     * 
+     * @param entity The living entity (player)
+     * @param partialTick Interpolation factor
+     */
+    private void applyViewBobbing(LivingEntity entity, float partialTick) {
+        // Get interpolated walk distance and bob amount (BOTH must be interpolated!)
+        float walkDist = entity.getWalkDistance(partialTick);
+        float bob = entity.getBob(partialTick);
+        
+        
+        // No bobbing if bob amount is zero
+        if (bob <= 0.0001f) return;
+        
+        // === MINECRAFT'S EXACT BOBBING FORMULA ===
+        // Uses sine/cosine of walk distance to create rhythmic motion
+        
+        float walkDistPi = walkDist * (float) Math.PI;
+        
+        // Calculate bob offsets
+        float sinWalk = (float) Math.sin(walkDistPi);
+        float cosWalk = (float) Math.cos(walkDistPi);
+        float absNegCosWalk = -(float) Math.abs(cosWalk);
+        
+        // Translation offset (side-to-side and up-down bobbing)
+        // Minecraft's scale - tune to match the feel
+        float bobScale = 0.05f;
+        float bobX = sinWalk * bob * 0.5f * bobScale;
+        float bobY = absNegCosWalk * bob * bobScale;
+        
+        // Rotation angles (head tilt during walking)
+        float rollAngle = sinWalk * bob * 3.0f * bobScale;
+        float pitchAngle = (float) Math.abs(Math.cos(walkDistPi - 0.2f)) * bob * 5.0f * bobScale;
+        
+        // Apply bobbing to view matrix
+        // Order matters: translate first, then rotate
+        viewMatrix.translate(bobX, bobY, 0);
+        viewMatrix.rotateZ((float) Math.toRadians(rollAngle));
+        viewMatrix.rotateX((float) Math.toRadians(pitchAngle));
     }
 
 

@@ -1,6 +1,8 @@
 package com.mineclone.game;
 
 import com.mineclone.core.ResourceLoader;
+import com.mineclone.core.utils.Logger;
+import com.mineclone.core.utils.RenderHealthCheck;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.lwjgl.opengl.GL11;
@@ -27,11 +29,18 @@ public class Renderer {
     private TextureAtlas textureAtlas;
 
     public Renderer() throws Exception {
+        Logger.info("Renderer", "Initializing renderer...");
+        
         // Create shader program
         shaderProgram = new ShaderProgram();
         shaderProgram.createVertexShader(ResourceLoader.loadResource("/shaders/vertex.glsl"));
         shaderProgram.createFragmentShader(ResourceLoader.loadResource("/shaders/fragment.glsl"));
         shaderProgram.link();
+        
+        // Validate shader program
+        if (!RenderHealthCheck.validateShaderProgram(shaderProgram.getProgramId(), "Block Shader")) {
+            throw new RuntimeException("Shader program validation failed!");
+        }
 
         // Create uniforms
         shaderProgram.createUniform("projection");
@@ -43,11 +52,22 @@ public class Renderer {
         shaderProgram.createUniform("fogColor");
         shaderProgram.createUniform("fogStart");
         shaderProgram.createUniform("fogEnd");
+        
+        RenderHealthCheck.checkGLError("Shader uniform creation");
 
         // Create VAO and VBO
         vaoId = glGenVertexArrays();
         vboId = glGenBuffers();
-        System.out.println("Created VAO: " + vaoId + ", VBO: " + vboId);
+        
+        // Validate VAO and VBO
+        if (!RenderHealthCheck.validateVAO(vaoId, "Renderer VAO")) {
+            throw new RuntimeException("VAO creation failed!");
+        }
+        if (!RenderHealthCheck.validateVBO(vboId, "Renderer VBO")) {
+            throw new RuntimeException("VBO creation failed!");
+        }
+        
+        Logger.info("Renderer", "Renderer initialized (VAO: " + vaoId + ", VBO: " + vboId + ")");
     }
     
     /**
@@ -90,8 +110,8 @@ public class Renderer {
         
         // Calculate fog distances based on chunk render distance
         // Minecraft typically starts fog at ~80% of render distance
-        float renderDistance = 16.0f * 5.0f;  // 5 chunks * 16 blocks = 80 blocks
-        float fogStart = renderDistance * 0.7f;  // Start fog at 70%
+        float renderDistance = 16.0f * 12.0f;  // 12 chunks * 16 blocks = 192 blocks
+        float fogStart = renderDistance * 0.75f;  // Start fog at 75%
         float fogEnd = renderDistance * 0.95f;   // Full fog at 95%
         
         shaderProgram.setUniform("fogColor", fogColor);
@@ -105,8 +125,9 @@ public class Renderer {
         shaderProgram.setUniform("model", modelMatrix);
 
         // Minecraft-style async: Check if mesh data is ready from background thread
+        // IMPORTANT: Only upload if mesh generation is complete (not currently generating)
         float[] pendingMesh = chunk.getPendingMeshData();
-        if (pendingMesh != null) {
+        if (pendingMesh != null && !chunk.isMeshGenerating()) {
             // Mesh was generated on background thread - upload to GPU NOW (on main thread)
             int newVertexCount = pendingMesh.length / 8;
             
@@ -114,14 +135,31 @@ public class Renderer {
             if (chunk.getVboId() == -1) {
                 int chunkVbo = glGenBuffers();
                 chunk.setVboId(chunkVbo);
+                Logger.debug("Renderer", "Created VBO " + chunkVbo + " for chunk " + pos);
             }
             
             if (newVertexCount > 0) {
-                glBindBuffer(GL_ARRAY_BUFFER, chunk.getVboId());
-                FloatBuffer vertexBuffer = org.lwjgl.BufferUtils.createFloatBuffer(pendingMesh.length);
-                vertexBuffer.put(pendingMesh).flip();
-                glBufferData(GL_ARRAY_BUFFER, vertexBuffer, GL_STATIC_DRAW);
-                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                // Validate mesh data before upload
+                boolean hasInvalidData = false;
+                for (int i = 0; i < pendingMesh.length && i < 100; i++) {  // Check first 100 values
+                    if (Float.isNaN(pendingMesh[i]) || Float.isInfinite(pendingMesh[i])) {
+                        Logger.error("Renderer", "Invalid mesh data at index " + i + " for chunk " + pos + ": " + pendingMesh[i]);
+                        hasInvalidData = true;
+                        break;
+                    }
+                }
+                
+                if (hasInvalidData || pendingMesh.length == 0 || pendingMesh.length > 10000000) {
+                    Logger.error("Renderer", "Skipping VBO upload for chunk " + pos + " - invalid data (length=" + pendingMesh.length + ", hasInvalidData=" + hasInvalidData + ")");
+                } else {
+                    glBindBuffer(GL_ARRAY_BUFFER, chunk.getVboId());
+                    FloatBuffer vertexBuffer = org.lwjgl.BufferUtils.createFloatBuffer(pendingMesh.length);
+                    vertexBuffer.put(pendingMesh).flip();
+                    glBufferData(GL_ARRAY_BUFFER, vertexBuffer, GL_STATIC_DRAW);
+                    glBindBuffer(GL_ARRAY_BUFFER, 0);
+                    
+                    RenderHealthCheck.checkGLError("VBO upload for chunk " + pos);
+                }
             }
             
             chunk.setVertexCount(newVertexCount);
@@ -158,12 +196,16 @@ public class Renderer {
     }
 
     public void cleanup() {
+        Logger.info("Renderer", "Cleaning up renderer resources...");
         shaderProgram.cleanup();
         if (vboId != 0) {
             glDeleteBuffers(vboId);
+            Logger.debug("Renderer", "Deleted VBO: " + vboId);
         }
         if (vaoId != 0) {
             glDeleteVertexArrays(vaoId);
+            Logger.debug("Renderer", "Deleted VAO: " + vaoId);
         }
+        Logger.info("Renderer", "Renderer cleanup complete");
     }
 }

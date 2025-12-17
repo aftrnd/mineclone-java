@@ -31,6 +31,12 @@ public class LocalPlayer extends LivingEntity {
     private static final float PLAYER_HEIGHT = 1.8f;
     private static final float PLAYER_EYE_HEIGHT = 1.62f;
     
+    // === VIEW BOBBING (Minecraft's xBob/yBob system) ===
+    private float xBob;      // Pitch bob (current)
+    private float xBobO;     // Pitch bob (previous)
+    private float yBob;      // Yaw bob (current)
+    private float yBobO;     // Yaw bob (previous)
+    
     /**
      * Create local player.
      */
@@ -52,6 +58,10 @@ public class LocalPlayer extends LivingEntity {
         this.wantsJump = false;
         this.wantsSprint = false;
         this.lastSpacePressTime = 0;
+        this.xBob = 0;
+        this.xBobO = 0;
+        this.yBob = 0;
+        this.yBobO = 0;
     }
     
     /**
@@ -60,6 +70,12 @@ public class LocalPlayer extends LivingEntity {
      */
     @Override
     public void tick() {
+        // Update view bobbing (Minecraft's EXACT method from LocalPlayer.aiStep)
+        this.yBobO = this.yBob;
+        this.xBobO = this.xBob;
+        this.xBob = this.xBob + (this.getXRot() - this.xBob) * 0.5f;
+        this.yBob = this.yBob + (this.getYRot() - this.yBob) * 0.5f;
+        
         // Process keyboard input into movement values
         this.updateInputs();
         
@@ -173,5 +189,21 @@ public class LocalPlayer extends LivingEntity {
             (float)this.deltaMovement.y,
             (float)this.deltaMovement.z
         );
+    }
+    
+    // === VIEW BOBBING GETTERS (Minecraft's xBob/yBob system) ===
+    
+    /**
+     * Get interpolated pitch bob for smooth view bobbing.
+     */
+    public float getXBob(float partialTick) {
+        return this.xBobO + (this.xBob - this.xBobO) * partialTick;
+    }
+    
+    /**
+     * Get interpolated yaw bob for smooth view bobbing.
+     */
+    public float getYBob(float partialTick) {
+        return this.yBobO + (this.yBob - this.yBobO) * partialTick;
     }
 }

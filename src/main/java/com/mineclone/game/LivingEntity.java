@@ -29,6 +29,12 @@ public abstract class LivingEntity extends Entity {
     protected boolean flying;
     protected boolean jumping;
     
+    // === VIEW BOBBING (walk animation) ===
+    protected float walkDist;     // Current walk distance
+    protected float walkDistO;    // Previous walk distance (for interpolation)
+    protected float bob;          // Bob amount (0.0 to 1.0)
+    protected float bobO;         // Previous bob (for interpolation)
+    
     // === MINECRAFT'S EXACT MOVEMENT CONSTANTS ===
     // These are Minecraft 1.21's EXACT values - DO NOT CHANGE
     
@@ -38,28 +44,22 @@ public abstract class LivingEntity extends Entity {
     
     // Friction multipliers (applied to velocity AFTER movement each tick)
     private static final float GROUND_FRICTION = 0.91f;  // Ground friction (0.91 is exact)
-    private static final float AIR_FRICTION = 0.98f;     // Air friction
     
     // Block slipperiness (normal blocks are 0.6, ice is 0.98)
     private static final float SLIPPERINESS = 0.6f;
     
-    // Minecraft's movement input scale factor
-    // Formula: 0.16277136 / (slipperiness³)
-    private static final float MOVEMENT_FACTOR = 0.16277136f / (0.6f * 0.6f * 0.6f);
-    
     // Movement speeds (blocks per tick at 20 TPS = m/s at 20 TPS)
     protected float movementSpeed = 0.1f;        // Walking: ~1.8 m/s
-    protected float flyingSpeed = 0.25f;         // Flying: tuned for ~5 m/s base
+    protected float flyingSpeed = 0.13f;         // Flying: tuned to match Minecraft ~10.92 m/s
     protected float jumpPower = 0.42f;           // Jump velocity
     
     // Speed multipliers
     private static final float SPRINT_SPEED_MODIFIER = 1.3f;      // Sprint: 2.6 m/s
-    private static final float FLYING_SPRINT_MODIFIER = 2.0f;     // Flying sprint: ~10 m/s
+    private static final float FLYING_SPRINT_MODIFIER = 2.5f;     // Flying sprint: ~27 m/s
     
     // Air control (movement when not on ground)
-    // Base Minecraft value is 0.02, but we need more to maintain speed without air friction
-    private static final float AIR_CONTROL = 0.02f;
-    private static final float AIR_CONTROL_ADJUSTED = 0.055f;  // Tuned for proper bunny hop feel
+    // Tuned to maintain speed during bunny hopping without ground friction
+    private static final float AIR_CONTROL_ADJUSTED = 0.055f;
     
     public LivingEntity(ChunkManager world) {
         super(world);
@@ -70,6 +70,10 @@ public abstract class LivingEntity extends Entity {
         this.wantsSprinting = false;
         this.flying = false;
         this.jumping = false;
+        this.walkDist = 0;
+        this.walkDistO = 0;
+        this.bob = 0;
+        this.bobO = 0;
     }
     
     /**
@@ -80,6 +84,7 @@ public abstract class LivingEntity extends Entity {
      * 2. travel() - Convert input to velocity
      * 3. move() - Apply velocity with collision
      * 4. Friction - Apply drag to velocity
+     * 5. Update walk distance for view bobbing
      */
     @Override
     public void tick() {
@@ -96,6 +101,9 @@ public abstract class LivingEntity extends Entity {
         
         // Apply friction after movement
         this.applyFriction();
+        
+        // Update walk distance for view bobbing
+        this.updateWalkDistance();
     }
     
     /**
@@ -236,9 +244,8 @@ public abstract class LivingEntity extends Entity {
      */
     protected void applyFriction() {
         if (this.flying) {
-            // Flying: Apply lighter friction to allow faster speeds
-            // Use higher friction value (closer to 1.0) for less drag
-            float flyingFriction = 0.75f;  // Less friction = faster flying
+            // Flying: Balanced friction for Minecraft-like creative flying (~10.92 m/s)
+            float flyingFriction = 0.82f;  // Equilibrium: 0.13 / (1-0.82) = ~7.2/tick = 10.8 m/s
             this.deltaMovement.x *= flyingFriction;
             this.deltaMovement.y *= flyingFriction;
             this.deltaMovement.z *= flyingFriction;
@@ -359,5 +366,56 @@ public abstract class LivingEntity extends Entity {
     
     public boolean isJumping() {
         return this.jumping;
+    }
+    
+    // === VIEW BOBBING ===
+    
+    /**
+     * Update walk distance for view bobbing animation.
+     * Minecraft's ClientAvatarState.updateBob() lerps bob toward horizontal speed.
+     */
+    protected void updateWalkDistance() {
+        // Store old values for interpolation (CRITICAL for smooth animation!)
+        this.walkDistO = this.walkDist;
+        this.bobO = this.bob;
+        
+        // Calculate horizontal movement this tick
+        double dx = this.x - this.xo;
+        double dz = this.z - this.zo;
+        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
+        
+        // Add to walk distance (Minecraft's exact: no scaling!)
+        this.walkDist += (float) horizontalDist;
+        
+        // Calculate target bob based on speed
+        float targetBob = (float) Math.min(horizontalDist * 1.0, 1.0);
+        
+        // Minecraft's EXACT lerp factor: 0.4
+        this.bob = this.bob + (targetBob - this.bob) * 0.4f;
+    }
+    
+    /**
+     * Get interpolated walk distance (MINECRAFT'S EXACT FORMULA).
+     * From ClientAvatarState.getBackwardsInterpolatedWalkDistance()
+     * 
+     * Bytecode: diff = walkDist - walkDistO; return -(walkDist + diff * partialTick);
+     * 
+     * @param partialTick Interpolation factor (0.0 to 1.0)
+     * @return Interpolated walk distance (backward extrapolated and negated)
+     */
+    public float getWalkDistance(float partialTick) {
+        float diff = this.walkDist - this.walkDistO;
+        return -(this.walkDist + diff * partialTick);  // EXACT Minecraft formula!
+    }
+    
+    /**
+     * Get interpolated bob amount (for smooth animation between ticks).
+     * Minecraft's ClientAvatarState.getInterpolatedBob()
+     * 
+     * @param partialTick Interpolation factor (0.0 to 1.0)
+     * @return Interpolated bob amount
+     */
+    public float getBob(float partialTick) {
+        return this.bobO + (this.bob - this.bobO) * partialTick;
     }
 }

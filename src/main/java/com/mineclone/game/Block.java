@@ -5,17 +5,18 @@ package com.mineclone.game;
  */
 public class Block {
     public enum Type {
-        // Format: id, top, bottom, side, north, south, solid, transparent
-        AIR(0, 0, 0, 0, 0, 0, false, true),
-        STONE(1, 1, 1, 1, 1, 1, true, false),
-        GRASS(2, 0, 1, 0, 2, 2, true, false),
-        DIRT(3, 3, 3, 3, 3, 3, true, false),
-        COBBLESTONE(4, 4, 4, 4, 4, 4, true, false),
-        WOOD(5, 5, 5, 5, 6, 6, true, false),
-        SAND(6, 7, 7, 7, 7, 7, true, false),
-        WATER(7, 8, 8, 8, 8, 8, false, true),
-        OAK_LOG(8, 8, 8, 9, 9, 9, true, false),          // Top/bottom = log top texture, sides = log side
-        OAK_LEAVES(9, 10, 10, 10, 10, 10, true, true);   // Solid but transparent (Minecraft-style)
+        // Format: id, top, bottom, side, north, south, solid, transparent, hardness
+        // Hardness values from Minecraft 1.21+ (BlockBehaviour.Properties.strength)
+        AIR(0, 0, 0, 0, 0, 0, false, true, 0.0f),
+        STONE(1, 1, 1, 1, 1, 1, true, false, 1.5f),
+        GRASS(2, 0, 1, 0, 2, 2, true, false, 0.6f),
+        DIRT(3, 3, 3, 3, 3, 3, true, false, 0.5f),
+        COBBLESTONE(4, 4, 4, 4, 4, 4, true, false, 2.0f),
+        WOOD(5, 5, 5, 5, 6, 6, true, false, 2.0f),
+        SAND(6, 7, 7, 7, 7, 7, true, false, 0.5f),
+        WATER(7, 8, 8, 8, 8, 8, false, true, 100.0f),  // Can't break water
+        OAK_LOG(8, 8, 8, 9, 9, 9, true, false, 2.0f),          // Top/bottom = log top texture, sides = log side
+        OAK_LEAVES(9, 10, 10, 10, 10, 10, true, true, 0.2f);   // Solid but transparent (Minecraft-style)
 
         private final int id;
         private final int topTexture;
@@ -25,8 +26,9 @@ public class Block {
         private final int southTexture;
         private final boolean solid;
         private final boolean transparent;  // Can see through (like leaves, glass)
+        private final float hardness;       // How long it takes to break (seconds with bare hands)
 
-        Type(int id, int top, int bottom, int side, int north, int south, boolean solid, boolean transparent) {
+        Type(int id, int top, int bottom, int side, int north, int south, boolean solid, boolean transparent, float hardness) {
             this.id = id;
             this.topTexture = top;
             this.bottomTexture = bottom;
@@ -35,6 +37,7 @@ public class Block {
             this.southTexture = south;
             this.solid = solid;
             this.transparent = transparent;
+            this.hardness = hardness;
         }
 
         public int getId() { return id; }
@@ -45,6 +48,12 @@ public class Block {
         public int getSideTexture() { return sideTexture; }
         public int getNorthTexture() { return northTexture; }
         public int getSouthTexture() { return southTexture; }
+        
+        /**
+         * Get block breaking time in seconds (Minecraft hardness).
+         * This is for bare hands - tools would be faster.
+         */
+        public float getHardness() { return hardness; }
         
         /**
          * Get RGB color for a block face.
